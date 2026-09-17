@@ -1,9 +1,1 @@
-# Visual Studio user settings
-*.user
-
-# Card image files (large binary scans)
-*.img
-*.raw
-
-# Build output
 nikon-jpeg-recovery

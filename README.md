@@ -19,8 +19,11 @@ Recovered photos are written to `<dest_dir>` as:
 Requires a C11 compiler and POSIX APIs (`mmap`, ...). Linux/macOS:
 
 ```shell
-$ ./build_gcc.sh    # or ./build_clang.sh
+$ ./build.sh
 ```
+
+`build.sh` uses the first compiler it finds: `$CC` if set, then `gcc`, then
+`clang`. If none are installed it prints *No compilers detected*.
 
 produces `./nikon-jpeg-recovery`.
 
