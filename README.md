@@ -1,43 +1,53 @@
 ### Features
-Recover photos from sdcard(or sdcard image file) taken with Nikon DSLR(Tested on D3200).
+Recover photos taken with a Nikon DSLR (tested on D3200) from an SD card. The input can be
+either a raw disk-image file or the path to the physical SD card device itself (e.g.
+`/dev/sdb` or `/dev/mmcblk0`).
+
+The tool scans the input at every 512-byte sector boundary and structurally validates each
+candidate: it walks the JPEG marker chain from the SOI marker (`FF D8`) to the EOI marker
+(`FF D9`) so the exact file size is known, and parses the EXIF APP1 segment for the camera
+**Make** (tag `0x010F`) and the capture date (**DateTimeOriginal**, tag `0x9003`).
+
+By default only JPEGs whose Make field is `NIKON CORPORATION` are recovered. Pass `-a` to
+recover every well-formed JPEG regardless of source camera.
+
+Recovered photos are written to `<dest_dir>` as:
+- `IMG_<date>.jpg` — when an EXIF capture date is available (e.g. `IMG_2015:11:21 12:24:55.jpg`)
+- `IMG_<offset>.jpg` — in `-a` mode when the JPEG has no EXIF date (e.g. `IMG_0.jpg`)
 
 ### How to build
+Requires a C11 compiler and POSIX APIs (`mmap`, ...). Linux/macOS:
+
 ```shell
-$ meson setup builddir
-$ ninja -C builddir
+$ ./build_gcc.sh    # or ./build_clang.sh
 ```
 
+produces `./nikon-jpeg-recovery`.
+
 ### Run
+Both a disk image and a physical SD card device work — the tool mmaps the input, so any
+path that can be opened for reading is valid:
+
 ```shell
-$ ./nikon_jpeg_recovery ../sdcard.img .
+$ ./nikon-jpeg-recovery ../sdcard.img .
 Found jpeg at address 0x820000 - Date image created: 2015:11:21 12:24:55
 Found jpeg at address 0xf08000 - Date image created: 2015:11:21 12:40:36
 Found jpeg at address 0x1580000 - Date image created: 2015:11:21 12:41:01
 Found jpeg at address 0x1bc0000 - Date image created: 2015:11:21 12:41:13
 Found jpeg at address 0x2218000 - Date image created: 2015:11:21 12:42:28
-Found jpeg at address 0x2888000 - Date image created: 2015:11:21 12:45:33
-Found jpeg at address 0x2ed0000 - Date image created: 2015:11:21 12:46:38
-Found jpeg at address 0x3510000 - Date image created: 2015:11:21 12:46:47
-Found jpeg at address 0x3bd8000 - Date image created: 2015:11:21 12:46:56
-Found jpeg at address 0x42f0000 - Date image created: 2015:11:21 12:47:07
-Found jpeg at address 0x4938000 - Date image created: 2015:11:21 12:49:06
-Found jpeg at address 0x4f88000 - Date image created: 2015:11:21 12:50:07
-Found jpeg at address 0x56b8000 - Date image created: 2015:11:21 12:50:20
-Found jpeg at address 0x5cf8000 - Date image created: 2015:11:21 12:50:27
-Found jpeg at address 0x6368000 - Date image created: 2015:11:21 12:54:45
-Found jpeg at address 0x69f8000 - Date image created: 2015:11:21 12:54:53
-Found jpeg at address 0x7078000 - Date image created: 2015:11:21 12:55:00
-Found jpeg at address 0x7770000 - Date image created: 2015:11:21 12:55:39
-Found jpeg at address 0x7e48000 - Date image created: 2015:11:21 12:55:41
-Found jpeg at address 0x84e0000 - Date image created: 2015:11:21 12:56:33
-Found jpeg at address 0x8bb0000 - Date image created: 2015:11:21 12:56:46
-Found jpeg at address 0x92e0000 - Date image created: 2015:11:21 12:56:49
-Found jpeg at address 0x9a18000 - Date image created: 2015:11:21 12:56:52
-Found jpeg at address 0xa158000 - Date image created: 2015:11:21 12:56:58
-Found jpeg at address 0xa7c0000 - Date image created: 2015:11:21 12:57:00
-Found jpeg at address 0xaee8000 - Date image created: 2015:11:21 12:57:49
-Found jpeg at address 0xb5c8000 - Date image created: 2015:11:21 12:58:49
-Found jpeg at address 0xbc70000 - Date image created: 2015:11:21 12:58:55
-Found jpeg at address 0xc2f8000 - Date image created: 2015:11:21 12:59:00
 ...
 ```
+
+```shell
+$ ./nikon-jpeg-recovery /dev/sdb recover/ -a
+```
+
+Reading a device node requires sufficient permissions (`root`, or a user in the `disk`
+group). Unmount the card first — the tool only reads, but a mounted card can change
+underneath it, and writing the recovered JPEGs to a directory on that same card is not
+recommended.
+
+Usage: `nikon-jpeg-recovery <img_file> <dest_dir> [-a]`
+
+The `<img_file>` argument is the disk image or SD card device path. The `-a` flag is
+optional and must be the last argument.
