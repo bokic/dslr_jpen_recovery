@@ -191,6 +191,35 @@ static void perrorf(const char *fmt, ...)
     perror(msg);
 }
 
+// Write all count bytes to fd, handling partial writes and EINTR.
+// Returns 0 on success, or -1 on error with errno set.
+static int write_all(int fd, const void *buf, uint64_t count)
+{
+    const uint8_t *p = (const uint8_t *)buf;
+
+    while (count > 0)
+    {
+        size_t chunk = count > SSIZE_MAX ? SSIZE_MAX : (size_t)count;
+        ssize_t written = write(fd, p, chunk);
+        if (written < 0)
+        {
+            if (errno == EINTR)
+                continue;
+            return -1;
+        }
+        if (written == 0)
+        {
+            errno = ENOSPC;
+            return -1;
+        }
+
+        p += written;
+        count -= (uint64_t)written;
+    }
+
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     struct stat img_stat;
@@ -284,16 +313,9 @@ int main(int argc, char **argv)
                 break;
             }
 
-            ssize_t written = write(out_fd, ptr, info.size);
-            if (written < 0)
+            if (write_all(out_fd, ptr, info.size) < 0)
             {
                 perrorf("Error writing img file(%s)", dest_img_name);
-            }
-            else if ((uint64_t)written != info.size)
-            {
-                // errno is not meaningful here, so report byte counts instead.
-                fprintf(stderr, "Partial write to img file(%s). Wrote %zd of %" PRIu64 " bytes\n",
-                        dest_img_name, written, info.size);
             }
 
             close(out_fd);
