@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build nikon-jpeg-recovery with the first available compiler:
+# Build dslr_jpen_recovery with the first available compiler:
 # prefer the $CC environment variable, then gcc, then clang.
 set -e
 
@@ -19,6 +19,6 @@ if [ -z "$cc" ]; then
 fi
 
 echo "Building with $cc..."
-"$cc" -std=c11 -O2 -Wall -Wextra -o nikon-jpeg-recovery main.c
+"$cc" -std=c11 -O2 -Wall -Wextra -o dslr_jpen_recovery main.c
 
-echo "Built ./nikon-jpeg-recovery"
+echo "Built ./dslr_jpen_recovery"

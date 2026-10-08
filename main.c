@@ -40,23 +40,20 @@ static uint32_t read_le32(const uint8_t *p)
 }
 
 // exif points at the APP1 payload ("Exif\0\0" followed by the TIFF header),
-// with `len` bytes available. Returns 1 when the EXIF Make field is
-// "NIKON CORPORATION"; also fills info->date from tag 0x9003 if present.
-static int parse_exif_make(const uint8_t *exif, uint64_t len, struct jpeg_info *info)
+// with `len` bytes available. Fills info->date from tag 0x9003 if present.
+static void parse_exif(const uint8_t *exif, uint64_t len, struct jpeg_info *info)
 {
     uint32_t ifd_off, n_entries;
 
-    if (len < 14) return 0;
-    if (memcmp(exif, "Exif\0\0", 6) != 0) return 0;
-    if (exif[6] != 'I' || exif[7] != 'I') return 0;      // little-endian TIFF only
-    if (read_le16(exif + 8) != 42) return 0;
+    if (len < 14) return;
+    if (memcmp(exif, "Exif\0\0", 6) != 0) return;
+    if (exif[6] != 'I' || exif[7] != 'I') return;      // little-endian TIFF only
+    if (read_le16(exif + 8) != 42) return;
 
     ifd_off = read_le32(exif + 10);
-    if ((uint64_t)ifd_off + 2 > len - 6) return 0;       // IFD offsets are relative to "II"
+    if ((uint64_t)ifd_off + 2 > len - 6) return;       // IFD offsets are relative to "II"
     n_entries = read_le16(exif + 6 + ifd_off);
-    if ((uint64_t)6 + ifd_off + 2 + (uint64_t)n_entries * 12 > len) return 0;
-
-    int make_ok = 0;
+    if ((uint64_t)6 + ifd_off + 2 + (uint64_t)n_entries * 12 > len) return;
 
     for (uint32_t i = 0; i < n_entries; i++)
     {
@@ -77,12 +74,7 @@ static int parse_exif_make(const uint8_t *exif, uint64_t len, struct jpeg_info *
 
         const char *s = (const char *)exif + data_pos;
 
-        if (tag == 0x010f)                               // Make
-        {
-            if (data_size >= 18 && memcmp(s, "NIKON CORPORATION", 17) == 0 && s[17] == '\0')
-                make_ok = 1;
-        }
-        else if (tag == 0x9003)                          // DateTimeOriginal
+        if (tag == 0x9003)                               // DateTimeOriginal
         {
             size_t n = data_size > 1 ? data_size - 1 : 0; // drop trailing NUL
             if (n >= sizeof(info->date)) n = sizeof(info->date) - 1;
@@ -91,7 +83,6 @@ static int parse_exif_make(const uint8_t *exif, uint64_t len, struct jpeg_info *
         }
     }
 
-    return make_ok;
 }
 
 // Scan entropy-coded data for the EOI marker (FF D9). FF 00 is a stuffed data
@@ -122,13 +113,11 @@ static uint64_t find_eoi(const uint8_t *img, uint64_t start, uint64_t limit)
 // Detection:
 //   1. SOI marker (FF D8)
 //   2. a well-formed marker chain ending in EOI (FF D9); any EXIF APP1
-//      segments encountered are parsed for Make and DateTimeOriginal
-// When require_nikon is set, the EXIF Make field must be "NIKON CORPORATION".
+//      segments encountered are parsed for DateTimeOriginal
 // On success fills info->size / info->date and returns 1.
-static int identify_jpeg(const uint8_t *img, uint64_t limit, int require_nikon, struct jpeg_info *info)
+static int identify_jpeg(const uint8_t *img, uint64_t limit, struct jpeg_info *info)
 {
     uint64_t pos = 2, size = 0;
-    int make_ok = 0;
 
     if (limit < 4 || img[0] != 0xff || img[1] != 0xd8) return 0;
 
@@ -152,8 +141,7 @@ static int identify_jpeg(const uint8_t *img, uint64_t limit, int require_nikon, 
         if (m == 0xe1)                                  // APP1 / EXIF
         {
             if (pos + 2 + seg_len > limit) return 0;
-            if (parse_exif_make(img + pos + 4, seg_len - 2, info))
-                make_ok = 1;
+            parse_exif(img + pos + 4, seg_len - 2, info);
         }
 
         if (m == 0xda)                                  // SOS: entropy data follows
@@ -168,8 +156,6 @@ static int identify_jpeg(const uint8_t *img, uint64_t limit, int require_nikon, 
     }
 
     if (size == 0) return 0;
-    if (require_nikon && !make_ok) return 0;
-
     info->size = size;
     return 1;
 }
@@ -227,14 +213,12 @@ int main(int argc, char **argv)
     void *img_data = NULL;
     uint64_t src_size = 0;
     int img_fd = -1;          // not open yet
-    int all_types = 0;        // -a: recover every JPEG, not only Nikon
 
-    if (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "-a") != 0))
+    if (argc != 3)
     {
-        fprintf(stderr, "Usage nikon-jpeg-recovery <img_file> <dest_dir> [-a]\n");
+        fprintf(stderr, "Usage dslr_jpen_recovery <img_file> <dest_dir>\n");
         return EXIT_FAILURE;
     }
-    if (argc == 4) all_types = 1;
 
     setbuf(stdout, NULL); // disable buffering on stdout
 
@@ -279,7 +263,7 @@ int main(int argc, char **argv)
         const uint8_t *ptr = (const uint8_t *)img_data + c;
         struct jpeg_info info = {0};
 
-        if (identify_jpeg(ptr, src_size - c, !all_types, &info))
+        if (identify_jpeg(ptr, src_size - c, &info))
         {
             if (info.date[0] != '\0')
                 printf("Found jpeg at address 0x%" PRIx64 " - Date image created: %s\n", c, info.date);
