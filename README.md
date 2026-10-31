@@ -27,6 +27,14 @@ $ ./build.sh
 
 produces `./dslr_jpen_recovery`.
 
+#### Docker Build
+
+Build locally with Docker:
+
+```shell
+docker build -t dslr_jpen_recovery .
+```
+
 ### Run
 Both a disk image and a physical SD card device work — the tool mmaps the input, so any
 path that can be opened for reading is valid:
@@ -53,3 +61,15 @@ recommended.
 Usage: `dslr_jpen_recovery <img_file> <dest_dir>`
 
 The `<img_file>` argument is the disk image or SD card device path.
+
+#### Running with Docker
+
+Mount your working directory or image file to `/data` in the container:
+
+```shell
+# Recover from a disk image in current directory to ./recovered
+docker run --rm -v "$(pwd):/data" dslr_jpen_recovery sdcard.img ./recovered
+
+# Recover from a physical device (requires --device and root/device permissions)
+docker run --rm --device /dev/sdb:/dev/sdb -v "$(pwd):/data" dslr_jpen_recovery /dev/sdb ./recovered
+```

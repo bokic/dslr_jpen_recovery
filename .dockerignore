@@ -1,0 +1,6 @@
+.git
+.github
+*.md
+dslr_jpen_recovery
+Dockerfile
+.dockerignore
