@@ -36,6 +36,27 @@ docker build -t dslr_jpen_recovery .
 ```
 
 ### Run
+
+#### List Connected SD Cards and Removable Devices
+
+You can enumerate connected SD cards, card readers, and removable drives to find their block device path:
+
+```shell
+$ ./dslr_jpen_recovery --list
+Scanning for removable block devices and SD cards...
+
+[1] Path:       /dev/sdb
+    Name:       SanDisk Extreme Pro
+    Type:       USB (removable)
+    Size:       64.0 GB (125045424 sectors)
+    Partitions: /dev/sdb1
+
+Run recovery with your chosen device:
+  dslr_jpen_recovery <path> <dest_dir>
+```
+
+#### Recover JPEGs
+
 Both a disk image and a physical SD card device work — the tool mmaps the input, so any
 path that can be opened for reading is valid:
 
@@ -67,6 +88,9 @@ The `<img_file>` argument is the disk image or SD card device path.
 Mount your working directory or image file to `/data` in the container:
 
 ```shell
+# List devices through Docker (mount /sys and /dev)
+docker run --rm -v /sys:/sys -v /dev:/dev dslr_jpen_recovery --list
+
 # Recover from a disk image in current directory to ./recovered
 docker run --rm -v "$(pwd):/data" dslr_jpen_recovery sdcard.img ./recovered
 

@@ -10,6 +10,7 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <string.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -206,6 +207,252 @@ static int write_all(int fd, const void *buf, uint64_t count)
     return 0;
 }
 
+static void format_size(uint64_t bytes, char *out, size_t out_len)
+{
+    const char *units[] = {"B", "KB", "MB", "GB", "TB"};
+    int unit_idx = 0;
+    double d = (double)bytes;
+
+    while (d >= 1000.0 && unit_idx < 4)
+    {
+        d /= 1000.0;
+        unit_idx++;
+    }
+
+    if (unit_idx == 0)
+        snprintf(out, out_len, "%" PRIu64 " %s", bytes, units[unit_idx]);
+    else
+        snprintf(out, out_len, "%.1f %s", d, units[unit_idx]);
+}
+
+static int read_sysfs_string(const char *path, char *buf, size_t buf_size)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    if (!fgets(buf, (int)buf_size, f))
+    {
+        fclose(f);
+        return -1;
+    }
+    fclose(f);
+
+    size_t len = strlen(buf);
+    while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r' || buf[len - 1] == ' ' || buf[len - 1] == '\t'))
+    {
+        buf[--len] = '\0';
+    }
+    char *p = buf;
+    while (*p == ' ' || *p == '\t') p++;
+    if (p != buf)
+    {
+        memmove(buf, p, strlen(p) + 1);
+    }
+    return 0;
+}
+
+static int list_devices(void)
+{
+#if defined(__APPLE__)
+    printf("Listing external / removable devices (macOS):\n\n");
+    FILE *fp = popen("diskutil list external", "r");
+    if (!fp)
+    {
+        perror("popen(diskutil)");
+        return 1;
+    }
+    char buf[512];
+    while (fgets(buf, sizeof(buf), fp))
+    {
+        fputs(buf, stdout);
+    }
+    pclose(fp);
+    return 0;
+#else
+    DIR *dir = opendir("/sys/block");
+    if (!dir)
+    {
+        perrorf("Cannot access /sys/block to enumerate devices");
+        fprintf(stderr, "Note: If running inside Docker, mount /sys and /dev (e.g. -v /sys:/sys -v /dev:/dev)\n");
+        return 1;
+    }
+
+    struct dirent *entry;
+    int found_count = 0;
+
+    printf("Scanning for removable block devices and SD cards...\n\n");
+
+    while ((entry = readdir(dir)) != NULL)
+    {
+        const char *name = entry->d_name;
+        if (name[0] == '.') continue;
+
+        // Skip virtual / loop / ram / device mapper devices
+        if (strncmp(name, "loop", 4) == 0 ||
+            strncmp(name, "ram", 3) == 0 ||
+            strncmp(name, "zram", 4) == 0 ||
+            strncmp(name, "dm-", 3) == 0 ||
+            strncmp(name, "md", 2) == 0)
+        {
+            continue;
+        }
+
+        // Skip eMMC boot and RPMB partitions
+        if (strncmp(name, "mmcblk", 6) == 0 &&
+            (strstr(name, "boot") != NULL || strstr(name, "rpmb") != NULL))
+        {
+            continue;
+        }
+
+        char block_dir[PATH_MAX];
+        snprintf(block_dir, sizeof(block_dir), "/sys/block/%s", name);
+
+        char link_target[PATH_MAX] = {0};
+        ssize_t r = readlink(block_dir, link_target, sizeof(link_target) - 1);
+        if (r > 0) link_target[r] = '\0';
+
+        // Skip virtual devices
+        if (strstr(link_target, "/devices/virtual/") != NULL)
+        {
+            continue;
+        }
+
+        // Check if removable or MMC or USB
+        char rem_path[PATH_MAX];
+        char rem_buf[16] = {0};
+        snprintf(rem_path, sizeof(rem_path), "/sys/block/%s/removable", name);
+        read_sysfs_string(rem_path, rem_buf, sizeof(rem_buf));
+
+        int is_removable = (rem_buf[0] == '1');
+        int is_usb = (strstr(link_target, "/usb") != NULL);
+        int is_mmc = (strncmp(name, "mmcblk", 6) == 0 || strstr(link_target, "/mmc") != NULL);
+
+        if (!is_removable && !is_usb && !is_mmc)
+        {
+            continue;
+        }
+
+        // Read size in 512-byte sectors
+        char size_path[PATH_MAX];
+        char size_buf[32] = {0};
+        snprintf(size_path, sizeof(size_path), "/sys/block/%s/size", name);
+        uint64_t sectors = 0;
+        if (read_sysfs_string(size_path, size_buf, sizeof(size_buf)) == 0)
+        {
+            sectors = strtoull(size_buf, NULL, 10);
+        }
+        uint64_t bytes = sectors * SECTOR_SIZE;
+        char human_size[32] = "0 B";
+        if (bytes > 0)
+        {
+            format_size(bytes, human_size, sizeof(human_size));
+        }
+
+        // Determine device model / name
+        char dev_model[128] = {0};
+        char dev_vendor[128] = {0};
+
+        if (is_mmc)
+        {
+            char mmc_name[64] = {0};
+            char mmc_type[32] = {0};
+            char mmc_name_path[PATH_MAX], mmc_type_path[PATH_MAX];
+            snprintf(mmc_name_path, sizeof(mmc_name_path), "/sys/block/%s/device/name", name);
+            snprintf(mmc_type_path, sizeof(mmc_type_path), "/sys/block/%s/device/type", name);
+            read_sysfs_string(mmc_name_path, mmc_name, sizeof(mmc_name));
+            read_sysfs_string(mmc_type_path, mmc_type, sizeof(mmc_type));
+
+            if (mmc_name[0] != '\0' && mmc_type[0] != '\0')
+            {
+                snprintf(dev_model, sizeof(dev_model), "%s Card (%s)", mmc_type, mmc_name);
+            }
+            else if (mmc_name[0] != '\0')
+            {
+                snprintf(dev_model, sizeof(dev_model), "SD/MMC (%s)", mmc_name);
+            }
+            else
+            {
+                snprintf(dev_model, sizeof(dev_model), "SD/MMC Card");
+            }
+        }
+        else
+        {
+            char vendor_path[PATH_MAX], model_path[PATH_MAX];
+            snprintf(vendor_path, sizeof(vendor_path), "/sys/block/%s/device/vendor", name);
+            snprintf(model_path, sizeof(model_path), "/sys/block/%s/device/model", name);
+            read_sysfs_string(vendor_path, dev_vendor, sizeof(dev_vendor));
+            read_sysfs_string(model_path, dev_model, sizeof(dev_model));
+        }
+
+        // Find partitions
+        char partitions[256] = {0};
+        DIR *dev_dir = opendir(block_dir);
+        if (dev_dir)
+        {
+            struct dirent *part_de;
+            while ((part_de = readdir(dev_dir)) != NULL)
+            {
+                if (part_de->d_name[0] == '.') continue;
+                char part_check[PATH_MAX];
+                snprintf(part_check, sizeof(part_check), "/sys/block/%s/%s/partition", name, part_de->d_name);
+                if (access(part_check, F_OK) == 0)
+                {
+                    if (partitions[0] != '\0')
+                    {
+                        strncat(partitions, ", ", sizeof(partitions) - strlen(partitions) - 1);
+                    }
+                    strncat(partitions, "/dev/", sizeof(partitions) - strlen(partitions) - 1);
+                    strncat(partitions, part_de->d_name, sizeof(partitions) - strlen(partitions) - 1);
+                }
+            }
+            closedir(dev_dir);
+        }
+
+        found_count++;
+
+        printf("[%d] Path:       /dev/%s\n", found_count, name);
+        if (dev_vendor[0] != '\0' && dev_model[0] != '\0')
+        {
+            printf("    Name:       %s %s\n", dev_vendor, dev_model);
+        }
+        else if (dev_model[0] != '\0')
+        {
+            printf("    Name:       %s\n", dev_model);
+        }
+        else
+        {
+            printf("    Name:       %s\n", is_mmc ? "SD/MMC Device" : "Removable Drive");
+        }
+
+        printf("    Type:       %s%s%s\n",
+               is_mmc ? "SD/MMC" : (is_usb ? "USB" : "Removable"),
+               is_removable ? " (removable)" : "",
+               bytes == 0 ? " [No media inserted]" : "");
+
+        printf("    Size:       %s (%" PRIu64 " sectors)\n", human_size, sectors);
+        if (partitions[0] != '\0')
+        {
+            printf("    Partitions: %s\n", partitions);
+        }
+        printf("\n");
+    }
+
+    closedir(dir);
+
+    if (found_count == 0)
+    {
+        printf("No removable block devices or SD cards detected.\n");
+        printf("If your SD card is connected via a USB adapter, check 'lsusb' or 'dmesg'.\n");
+    }
+    else
+    {
+        printf("Run recovery with your chosen device:\n");
+        printf("  dslr_jpen_recovery <path> <dest_dir>\n");
+    }
+
+    return 0;
+#endif
+}
+
 int main(int argc, char **argv)
 {
     struct stat img_stat;
@@ -214,9 +461,28 @@ int main(int argc, char **argv)
     uint64_t src_size = 0;
     int img_fd = -1;          // not open yet
 
+    if (argc == 2 && (strcmp(argv[1], "--list") == 0 || strcmp(argv[1], "-l") == 0))
+    {
+        return list_devices();
+    }
+
+    if (argc == 2 && (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0))
+    {
+        printf("Usage:\n");
+        printf("  dslr_jpen_recovery <img_file_or_device> <dest_dir>\n");
+        printf("  dslr_jpen_recovery --list\n\n");
+        printf("Arguments:\n");
+        printf("  <img_file_or_device>  Path to disk image (.img, .raw) or block device (/dev/sdb, /dev/mmcblk0)\n");
+        printf("  <dest_dir>            Target directory where recovered JPEG files will be stored\n");
+        printf("  --list, -l            Enumerate and list all connected SD cards and removable block devices\n");
+        printf("  --help, -h            Show this help message\n");
+        return EXIT_SUCCESS;
+    }
+
     if (argc != 3)
     {
-        fprintf(stderr, "Usage dslr_jpen_recovery <img_file> <dest_dir>\n");
+        fprintf(stderr, "Usage: dslr_jpen_recovery <img_file> <dest_dir>\n");
+        fprintf(stderr, "   or: dslr_jpen_recovery --list\n");
         return EXIT_FAILURE;
     }
 
